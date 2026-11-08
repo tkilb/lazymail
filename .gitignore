@@ -1,0 +1,7 @@
+bin/
+dist/
+*.tmp
+*.enc
+credentials.json
+token.json*
+.DS_Store
