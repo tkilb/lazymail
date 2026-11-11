@@ -107,4 +107,7 @@ func TestTruncate(t *testing.T) {
 	if got := Truncate("abc", 0); got != "" {
 		t.Errorf("Truncate('abc', 0) = %q, want ''", got)
 	}
+	if w := StringWidth("⚡"); w != 2 {
+		t.Errorf("StringWidth('⚡') = %d, want 2", w)
+	}
 }

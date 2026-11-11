@@ -21,12 +21,19 @@ type SenderSummary struct {
 	LastDate     string
 }
 
+func sanitizeHeaderField(s string) string {
+	s = strings.ReplaceAll(s, "\r", " ")
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.ReplaceAll(s, "\t", " ")
+	return strings.TrimSpace(s)
+}
+
 // ParseSender parses an RFC 5322 address string into display name and email address.
 func ParseSender(raw string) (name, email string) {
-	raw = strings.TrimSpace(raw)
+	raw = sanitizeHeaderField(raw)
 	if addr, err := mail.ParseAddress(raw); err == nil {
-		name = addr.Name
-		email = strings.ToLower(addr.Address)
+		name = sanitizeHeaderField(addr.Name)
+		email = sanitizeHeaderField(strings.ToLower(addr.Address))
 		if name == "" {
 			name = email
 		}
@@ -35,6 +42,7 @@ func ParseSender(raw string) (name, email string) {
 
 	// Fallback for non-standard formats
 	clean := strings.Trim(raw, "<>\" ")
+	clean = sanitizeHeaderField(clean)
 	return clean, strings.ToLower(clean)
 }
 
@@ -269,3 +277,162 @@ func FilterMessagesBySender(messages []*MessageSummary, senderEmail string) []*M
 	}
 	return matched
 }
+
+// SenderCrawlProgress reports incremental progress of a full mailbox sender crawl.
+type SenderCrawlProgress struct {
+	Folder  string
+	Crawled int
+	Total   int
+	Senders []*SenderSummary
+	Done    bool
+	Err     error
+}
+
+// CrawlFolderSenders streams incremental sender statistics across all messages in a mailbox
+// in chunks using the secondary background IMAP session.
+func (c *Client) CrawlFolderSenders(ctx context.Context, folder string, progressChan chan<- SenderCrawlProgress) {
+	defer close(progressChan)
+
+	c.bgMu.Lock()
+	cl, err := c.ensureBgConnected()
+	if err != nil {
+		c.bgMu.Unlock()
+		progressChan <- SenderCrawlProgress{Folder: folder, Err: err, Done: true}
+		return
+	}
+
+	actual := c.ResolveMailbox(folder)
+	mbox, err := cl.Select(actual, true)
+	if err != nil || mbox == nil {
+		c.bgMu.Unlock()
+		progressChan <- SenderCrawlProgress{Folder: folder, Err: err, Done: true}
+		return
+	}
+
+	total := int(mbox.Messages)
+	if total == 0 {
+		c.bgMu.Unlock()
+		progressChan <- SenderCrawlProgress{Folder: folder, Crawled: 0, Total: 0, Done: true}
+		return
+	}
+
+	c.bgMu.Unlock()
+
+	const chunkSize = 1000
+	counts := make(map[string]*SenderSummary)
+	crawled := 0
+
+	// Crawl from the most recent messages backwards to oldest
+	for to := uint32(total); to >= 1; {
+		if ctx.Err() != nil {
+			progressChan <- SenderCrawlProgress{Folder: folder, Crawled: crawled, Total: total, Err: ctx.Err(), Done: true}
+			return
+		}
+
+		var from uint32 = 1
+		if to > uint32(chunkSize) {
+			from = to - uint32(chunkSize) + 1
+		}
+
+		// Re-acquire lock per chunk so other background calls can slip in
+		c.bgMu.Lock()
+		cl, err := c.ensureBgConnected()
+		if err != nil {
+			c.bgMu.Unlock()
+			progressChan <- SenderCrawlProgress{Folder: folder, Crawled: crawled, Total: total, Err: err, Done: true}
+			return
+		}
+
+		// Ensure mailbox is still selected on this background connection
+		if _, err := cl.Select(actual, true); err != nil {
+			c.bgMu.Unlock()
+			progressChan <- SenderCrawlProgress{Folder: folder, Crawled: crawled, Total: total, Err: err, Done: true}
+			return
+		}
+
+		seqset := new(imap.SeqSet)
+		seqset.AddRange(from, to)
+
+		items := []imap.FetchItem{
+			imap.FetchEnvelope,
+			imap.FetchUid,
+		}
+
+		nExpected := int(to - from + 1)
+		messagesChan := make(chan *imap.Message, nExpected)
+		fetchDone := make(chan error, 1)
+
+		go func() {
+			fetchDone <- cl.Fetch(seqset, items, messagesChan)
+		}()
+
+		for msg := range messagesChan {
+			if msg == nil || msg.Envelope == nil {
+				continue
+			}
+			fromStr := ""
+			if len(msg.Envelope.From) > 0 {
+				addr := msg.Envelope.From[0]
+				email := fmt.Sprintf("%s@%s", addr.MailboxName, addr.HostName)
+				if addr.PersonalName != "" {
+					fromStr = fmt.Sprintf("%s <%s>", addr.PersonalName, email)
+				} else {
+					fromStr = email
+				}
+			}
+			name, email := ParseSender(fromStr)
+			if email == "" {
+				continue
+			}
+			s, exists := counts[email]
+			if !exists {
+				s = &SenderSummary{
+					DisplayName: name,
+					Email:       email,
+					LastDate:    msg.Envelope.Date.Format("02 Jan 15:04"),
+				}
+				counts[email] = s
+			}
+			s.TotalCount++
+		}
+
+		err = <-fetchDone
+		c.bgMu.Unlock()
+
+		if err != nil {
+			progressChan <- SenderCrawlProgress{Folder: folder, Crawled: crawled, Total: total, Err: err, Done: true}
+			return
+		}
+
+		crawled += nExpected
+
+		// Convert counts map to sorted slice
+		list := make([]*SenderSummary, 0, len(counts))
+		for _, s := range counts {
+			list = append(list, s)
+		}
+		sort.Slice(list, func(i, j int) bool {
+			keyI := SenderSortKey(list[i])
+			keyJ := SenderSortKey(list[j])
+			if keyI != keyJ {
+				return keyI < keyJ
+			}
+			return strings.ToLower(list[i].Email) < strings.ToLower(list[j].Email)
+		})
+
+		isDone := from == 1
+		progressChan <- SenderCrawlProgress{
+			Folder:  folder,
+			Crawled: crawled,
+			Total:   total,
+			Senders: list,
+			Done:    isDone,
+		}
+
+		if from == 1 {
+			break
+		}
+		to = from - 1
+	}
+}
+

@@ -116,6 +116,11 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 }
 
 func (m Model) View() string {
+	innerWidth, innerHeight := panel.InnerSize(m.Width, m.Height)
+	if innerWidth < 1 {
+		innerWidth = 1
+	}
+
 	var headerLines []string
 
 	if m.Message == nil {
@@ -124,19 +129,19 @@ func (m Model) View() string {
 	}
 
 	labelStyle := lipgloss.NewStyle().Bold(true).Foreground(panel.InfoColor)
-	headerLines = append(headerLines, fmt.Sprintf("%s %s", labelStyle.Render("Subject:"), m.Message.Subject))
-	headerLines = append(headerLines, fmt.Sprintf("%s %s", labelStyle.Render("From:   "), m.Message.From))
-	headerLines = append(headerLines, fmt.Sprintf("%s %s", labelStyle.Render("Date:   "), m.Message.Date))
+	headerLines = append(headerLines, panel.Truncate(fmt.Sprintf("%s %s", labelStyle.Render("Subject:"), m.Message.Subject), innerWidth))
+	headerLines = append(headerLines, panel.Truncate(fmt.Sprintf("%s %s", labelStyle.Render("From:   "), m.Message.From), innerWidth))
+	headerLines = append(headerLines, panel.Truncate(fmt.Sprintf("%s %s", labelStyle.Render("Date:   "), m.Message.Date), innerWidth))
 
 	if m.Message.HasUnsubscribe {
 		unsubStyle := lipgloss.NewStyle().Bold(true).Foreground(panel.HighlightColor)
 		unsubType := "URL"
-		if m.Message.Unsubscribe.IsOneClick {
+		if m.Message.Unsubscribe != nil && m.Message.Unsubscribe.IsOneClick {
 			unsubType = "One-Click RFC 8058"
-		} else if m.Message.Unsubscribe.Mailto != "" {
+		} else if m.Message.Unsubscribe != nil && m.Message.Unsubscribe.Mailto != "" {
 			unsubType = "Mailto"
 		}
-		headerLines = append(headerLines, fmt.Sprintf("%s %s [press 'u' to trigger]", unsubStyle.Render("⚡ Unsubscribe:"), unsubType))
+		headerLines = append(headerLines, panel.Truncate(fmt.Sprintf("%s %s [press 'u' to trigger]", unsubStyle.Render("⚡ Unsubscribe:"), unsubType), innerWidth))
 	}
 
 	if len(m.Message.Attachments) > 0 {
@@ -153,11 +158,18 @@ func (m Model) View() string {
 			}
 		}
 		attachStyle := lipgloss.NewStyle().Foreground(panel.HighlightColor)
-		headerLines = append(headerLines, fmt.Sprintf("%s %s", labelStyle.Render("Attachments:"), attachStyle.Render(strings.Join(attachStrs, ", "))))
+		headerLines = append(headerLines, panel.Truncate(fmt.Sprintf("%s %s", labelStyle.Render("Attachments:"), attachStyle.Render(strings.Join(attachStrs, ", "))), innerWidth))
 	}
 
-	divider := lipgloss.NewStyle().Foreground(panel.NormalBorderColor).Render(strings.Repeat("─", m.Width-4))
+	divider := lipgloss.NewStyle().Foreground(panel.NormalBorderColor).Render(strings.Repeat("─", innerWidth))
 	headerLines = append(headerLines, divider)
+
+	vpHeight := innerHeight - len(headerLines)
+	if vpHeight < 1 {
+		vpHeight = 1
+	}
+	m.Viewport.Width = innerWidth
+	m.Viewport.Height = vpHeight
 
 	fullContent := strings.Join(headerLines, "\n") + "\n" + m.Viewport.View()
 	return panel.Render("[0] Email Body", fullContent, m.Width, m.Height, m.Focused)

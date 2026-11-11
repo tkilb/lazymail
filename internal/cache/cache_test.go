@@ -49,6 +49,19 @@ func TestCache_EncryptedPersistence(t *testing.T) {
 		t.Fatalf("reloaded cached messages failed: %+v", reloaded)
 	}
 
+	// Test Senders caching
+	sendersList := []*gmail.SenderSummary{
+		{DisplayName: "Amazon", Email: "auto-confirm@amazon.com", TotalCount: 15},
+		{DisplayName: "Apple", Email: "no-reply@apple.com", TotalCount: 3},
+	}
+	if err := c.SetSenders("INBOX", sendersList); err != nil {
+		t.Fatalf("SetSenders failed: %v", err)
+	}
+	gotSenders := c.GetSenders("INBOX")
+	if len(gotSenders) != 2 || gotSenders[0].Email != "auto-confirm@amazon.com" {
+		t.Fatalf("unexpected cached senders: %+v", gotSenders)
+	}
+
 	// Verify that loading with wrong passphrase fails to decrypt
 	cWrong, err := New("wrong-passphrase")
 	if err != nil {

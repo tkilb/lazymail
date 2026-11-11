@@ -18,13 +18,18 @@ type SelectSenderMsg struct {
 
 // Model represents Panel 4: Senders
 type Model struct {
-	Senders  []*gmail.SenderSummary
-	Cursor   int
-	Selected int
-	Width    int
-	Height   int
-	Focused  bool
+	Senders      []*gmail.SenderSummary
+	Cursor       int
+	Selected     int
+	Width        int
+	Height       int
+	Focused      bool
+	Crawling     bool
+	CrawlPercent int
 }
+
+// PeekAllSendersMsg is emitted when the user requests a full crawl of all senders.
+type PeekAllSendersMsg struct{}
 
 // New initializes an empty senders panel model with '(all)' as the default filter option.
 func New() Model {
@@ -261,6 +266,10 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			return m, func() tea.Msg {
 				return SelectSenderMsg{Sender: m.Senders[m.Cursor]}
 			}
+		case "B":
+			return m, func() tea.Msg {
+				return PeekAllSendersMsg{}
+			}
 		}
 	}
 
@@ -308,14 +317,15 @@ func (m Model) View() string {
 				availWidth = 0
 			}
 
+			displayName := strings.TrimSpace(s.DisplayName)
 			var label string
 			if s.Email == "" {
 				label = "(all)"
-			} else if s.DisplayName == "" || strings.EqualFold(s.DisplayName, s.Email) {
+			} else if displayName == "" || strings.EqualFold(displayName, s.Email) {
 				label = s.Email
 			} else {
 				// We have both DisplayName and Email
-				full := fmt.Sprintf("%s <%s>", s.DisplayName, s.Email)
+				full := fmt.Sprintf("%s <%s>", displayName, s.Email)
 				if panel.StringWidth(full) <= availWidth {
 					label = full
 				} else if i == m.Cursor && m.Focused {
@@ -326,10 +336,10 @@ func (m Model) View() string {
 						label = panel.Truncate(s.Email, availWidth)
 					}
 				} else {
-					if panel.StringWidth(s.DisplayName) <= availWidth {
-						label = s.DisplayName
+					if panel.StringWidth(displayName) <= availWidth {
+						label = displayName
 					} else {
-						label = panel.Truncate(s.DisplayName, availWidth)
+						label = panel.Truncate(displayName, availWidth)
 					}
 				}
 			}
@@ -357,9 +367,11 @@ func (m Model) View() string {
 
 	content := strings.Join(lines, "\n")
 
-	// Dynamic title displaying the hovered sender's email address
+	// Dynamic title displaying crawling progress or hovered sender's email address
 	title := "[4] Senders"
-	if m.Focused && m.Cursor < len(m.Senders) && m.Senders[m.Cursor].Email != "" {
+	if m.Crawling {
+		title = fmt.Sprintf("[4] Senders (%d%%)", m.CrawlPercent)
+	} else if m.Focused && m.Cursor < len(m.Senders) && m.Senders[m.Cursor].Email != "" {
 		email := m.Senders[m.Cursor].Email
 		title = fmt.Sprintf("[4] %s", email)
 	}

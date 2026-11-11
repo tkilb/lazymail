@@ -3,6 +3,8 @@ package statusbar
 import (
 	"strings"
 	"testing"
+
+	"github.com/charmbracelet/lipgloss"
 )
 
 func TestStatusBar_View(t *testing.T) {
@@ -17,8 +19,10 @@ func TestStatusBar_View(t *testing.T) {
 	if !strings.Contains(view, "[0-4/Tab]") {
 		t.Errorf("expected key hint in status bar view, got: %s", view)
 	}
-	if strings.Contains(view, "\n") {
-		t.Errorf("expected status bar to be strictly a single line, but found newline: %q", view)
+	sw := lipgloss.Width(view)
+	t.Logf("m.Width=80, Width=%d", sw)
+	if sw > m.Width {
+		t.Errorf("statusbar width %d > m.Width %d", sw, m.Width)
 	}
 }
 

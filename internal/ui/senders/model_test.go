@@ -6,6 +6,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/tkilb/lazymail/internal/gmail"
+	"github.com/tkilb/lazymail/internal/ui/panel"
 )
 
 func TestSendersModel_NavigationAndSelect(t *testing.T) {
@@ -208,3 +209,58 @@ func TestSendersModel_AlphabeticalSorting(t *testing.T) {
 		t.Errorf("expected Selected to follow Bob to index 3, got %d", m.Selected)
 	}
 }
+
+func TestSendersModel_ReproduceLayout(t *testing.T) {
+	m := New()
+	m.Width = 34
+	m.Height = 21
+	m.Focused = true
+	m.SetSenders([]*gmail.SenderSummary{
+		{DisplayName: "Amazon Health", Email: "hello@email.health.amazon.com", TotalCount: 2},
+		{DisplayName: "Amazon Web Services", Email: "aws@amazon.com", TotalCount: 2},
+		{DisplayName: "Amazon.com", Email: "auto-confirm@amazon.com", TotalCount: 8},
+		{DisplayName: "Amazon.com", Email: "order-update@amazon.com", TotalCount: 9},
+		{DisplayName: "Amazon.com", Email: "shipment-tracking@amazon.com", TotalCount: 1},
+		{DisplayName: "Apple", Email: "apple@apple.com", TotalCount: 1},
+		{DisplayName: "Betterment Statements", Email: "statements@betterment.com", TotalCount: 14},
+	}, 17105)
+	m.Cursor = 1
+	m.Selected = 1
+
+	view := m.View()
+	lines := strings.Split(view, "\n")
+	t.Logf("Total lines: %d", len(lines))
+	for idx, line := range lines {
+		w := panel.StringWidth(line)
+		t.Logf("Line %2d (w=%2d): %s", idx, w, line)
+		if w != m.Width {
+			t.Errorf("line %d has width %d, want %d", idx, w, m.Width)
+		}
+	}
+}
+
+func TestSendersModel_PeekAllKeyAndCrawlView(t *testing.T) {
+	m := New()
+	m.Focused = true
+	m.Width = 30
+	m.Height = 10
+
+	// Pressing Shift+B ('B') emits PeekAllSendersMsg
+	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'B'}})
+	if cmd == nil {
+		t.Fatalf("expected command on Shift+B keypress")
+	}
+	msg := cmd()
+	if _, ok := msg.(PeekAllSendersMsg); !ok {
+		t.Fatalf("expected PeekAllSendersMsg, got %T", msg)
+	}
+
+	// While Crawling is true, panel title displays progress percentage
+	m.Crawling = true
+	m.CrawlPercent = 42
+	view := m.View()
+	if !strings.Contains(view, "Senders (42%)") {
+		t.Errorf("expected view title to contain Senders (42%%), got:\n%s", view)
+	}
+}
+

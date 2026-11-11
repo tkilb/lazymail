@@ -321,8 +321,8 @@ func (m Model) View() string {
 				pointer = "❯"
 			}
 
-			// Unsubscribe badge
-			unsubBadge := " "
+			// Unsubscribe badge (⚡ is 2 cells wide, so empty badge must be 2 spaces)
+			unsubBadge := "  "
 			if item.HasUnsubscribe {
 				unsubBadge = tagStyle.Render("⚡")
 			}
@@ -338,12 +338,13 @@ func (m Model) View() string {
 			}
 			fromField := fromName + strings.Repeat(" ", fromPad)
 
-			// Subject formatting
+			// Subject formatting: prefix is marker(1) + pointer(1) + unsubBadge(2) + space(1) + fromField(18) + space(1) = 24
+			const prefixWidth = 24
 			subject := item.Subject
 			if subject == "" {
 				subject = "(no subject)"
 			}
-			maxSubjLen := innerWidth - 23
+			maxSubjLen := innerWidth - prefixWidth
 			if maxSubjLen < 1 {
 				maxSubjLen = 1
 			}
@@ -351,7 +352,7 @@ func (m Model) View() string {
 				subject = panel.Truncate(subject, maxSubjLen)
 			}
 
-			subjPad := innerWidth - 23 - panel.StringWidth(subject)
+			subjPad := innerWidth - prefixWidth - panel.StringWidth(subject)
 			if subjPad < 0 {
 				subjPad = 0
 			}

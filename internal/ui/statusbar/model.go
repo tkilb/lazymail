@@ -117,6 +117,7 @@ func (m Model) View() string {
 	case panel.PanelSenders:
 		candidates = append(candidates,
 			fmt.Sprintf("%s %s", hintKey.Render("[Enter]"), hintDesc.Render("Filter")),
+			fmt.Sprintf("%s %s", hintKey.Render("[B]"), hintDesc.Render("Crawl")),
 		)
 	case panel.PanelPreview:
 		candidates = append(candidates,
@@ -155,15 +156,9 @@ func (m Model) View() string {
 		bar = strings.Join(fittedHints, "  ")
 	}
 
-	rendered := lipgloss.NewStyle().
-		Width(m.Width).
-		MaxHeight(1).
-		Padding(0, 1).
-		Render(bar)
-
-	// Guarantee single line strictly (never wrap to 2 lines)
-	if lines := strings.Split(rendered, "\n"); len(lines) > 0 {
-		return lines[0]
+	res := "  " + bar
+	if panel.StringWidth(res) > m.Width && m.Width > 0 {
+		res = panel.Truncate(res, m.Width)
 	}
-	return rendered
+	return res
 }

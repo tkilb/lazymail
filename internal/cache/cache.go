@@ -24,6 +24,7 @@ type Cache struct {
 
 	mailboxes map[string][]*gmail.MessageSummary
 	details   map[string]*gmail.MessageDetail
+	senders   map[string][]*gmail.SenderSummary
 }
 
 // New initializes the cache, creating ~/.config/lazymail/cache if needed and pre-deriving the key once.
@@ -59,6 +60,7 @@ func New(passphrase string) (*Cache, error) {
 		derivedKey: key,
 		mailboxes:  make(map[string][]*gmail.MessageSummary),
 		details:    make(map[string]*gmail.MessageDetail),
+		senders:    make(map[string][]*gmail.SenderSummary),
 	}
 
 	// Preload existing encrypted cache files into memory
@@ -73,6 +75,11 @@ func (c *Cache) mailboxFilePath(mailbox string) string {
 
 func (c *Cache) detailsFilePath() string {
 	return filepath.Join(c.dir, "details.enc")
+}
+
+func (c *Cache) sendersFilePath(mailbox string) string {
+	h := sha256.Sum256([]byte("senders:" + mailbox))
+	return filepath.Join(c.dir, fmt.Sprintf("senders_%s.enc", hex.EncodeToString(h[:8])))
 }
 
 func (c *Cache) loadAllFromDisk() {
@@ -165,3 +172,50 @@ func (c *Cache) SetDetail(mailbox, id string, detail *gmail.MessageDetail) error
 
 	return nil
 }
+
+// GetSenders returns cached sender statistics for a mailbox from memory or encrypted disk.
+func (c *Cache) GetSenders(mailbox string) []*gmail.SenderSummary {
+	c.mu.RLock()
+	if s, exists := c.senders[mailbox]; exists {
+		c.mu.RUnlock()
+		return s
+	}
+	c.mu.RUnlock()
+
+	path := c.sendersFilePath(mailbox)
+	data, err := auth.ReadEncryptedFileWithKey(path, c.derivedKey)
+	if err != nil {
+		return nil
+	}
+
+	var list []*gmail.SenderSummary
+	if err := json.Unmarshal(data, &list); err != nil {
+		return nil
+	}
+
+	c.mu.Lock()
+	c.senders[mailbox] = list
+	c.mu.Unlock()
+	return list
+}
+
+// SetSenders updates cached sender statistics in-memory and asynchronously encrypts to disk.
+func (c *Cache) SetSenders(mailbox string, senders []*gmail.SenderSummary) error {
+	c.mu.Lock()
+	c.senders[mailbox] = senders
+	snapshot := make([]*gmail.SenderSummary, len(senders))
+	copy(snapshot, senders)
+	c.mu.Unlock()
+
+	go func(snap []*gmail.SenderSummary) {
+		data, err := json.Marshal(snap)
+		if err != nil {
+			return
+		}
+		path := c.sendersFilePath(mailbox)
+		_ = auth.WriteEncryptedFileWithKey(path, data, c.derivedKey)
+	}(snapshot)
+
+	return nil
+}
+

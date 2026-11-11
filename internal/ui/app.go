@@ -48,6 +48,9 @@ type AppModel struct {
 	CurrentFolder string
 	CurrentQuery  string
 
+	crawlCancel context.CancelFunc
+	crawlChan   chan gmail.SenderCrawlProgress
+
 	Width  int
 	Height int
 }
@@ -143,7 +146,11 @@ func NewAppModel(client *gmail.Client, cacheStore *cache.Cache, passphrase strin
 				}
 			}
 			m.StatusPanel.UnreadMessages = unread
-			m.SendersPanel.SetSenders(gmail.AggregateSenders(cachedMsgs), len(cachedMsgs))
+			if cachedSenders := cacheStore.GetSenders("INBOX"); len(cachedSenders) > 0 {
+				m.SendersPanel.SetSenders(cachedSenders, len(cachedMsgs))
+			} else {
+				m.SendersPanel.SetSenders(gmail.AggregateSenders(cachedMsgs), len(cachedMsgs))
+			}
 
 			// Load first cached message detail if available
 			if detail := cacheStore.GetDetail("INBOX", cachedMsgs[0].ID); detail != nil {
@@ -157,11 +164,14 @@ func NewAppModel(client *gmail.Client, cacheStore *cache.Cache, passphrase strin
 }
 
 func (m AppModel) Init() tea.Cmd {
-	return tea.Batch(
+	cmds := []tea.Cmd{
 		m.loadMessagesCmd(m.CurrentFolder, m.CurrentQuery),
 		m.discoverFoldersCmd(),
-		m.sampleSendersCmd(m.CurrentFolder),
-	)
+	}
+	if m.Cache == nil || len(m.Cache.GetSenders(m.CurrentFolder)) == 0 {
+		cmds = append(cmds, m.sampleSendersCmd(m.CurrentFolder))
+	}
+	return tea.Batch(cmds...)
 }
 
 func (m *AppModel) updatePanelFocus() {
@@ -360,6 +370,12 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case folders.SelectFolderMsg:
+		if m.crawlCancel != nil {
+			m.crawlCancel()
+			m.crawlCancel = nil
+			m.crawlChan = nil
+			m.SendersPanel.Crawling = false
+		}
 		m.CurrentFolder = msg.Item.ID
 		m.StatusBar.CurrentFolder = m.CurrentFolder
 		m.CurrentQuery = ""
@@ -378,7 +394,11 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				m.MessagesPanel.SetMessages(cachedMsgs, 0)
 				m.StatusPanel.TotalMessages = len(cachedMsgs)
-				m.SendersPanel.SetSenders(gmail.AggregateSenders(cachedMsgs), len(cachedMsgs))
+				if cachedSenders := m.Cache.GetSenders(m.CurrentFolder); len(cachedSenders) > 0 {
+					m.SendersPanel.SetSenders(cachedSenders, len(cachedMsgs))
+				} else {
+					m.SendersPanel.SetSenders(gmail.AggregateSenders(cachedMsgs), len(cachedMsgs))
+				}
 				if cached := m.Cache.GetDetail(m.CurrentFolder, cachedMsgs[0].ID); cached != nil {
 					m.PreviewPanel.SetMessage(cached)
 				}
@@ -390,7 +410,9 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.MessagesPanel.Loading = true
 		cmds = append(cmds, m.loadMessagesCmd(m.CurrentFolder, m.CurrentQuery))
-		cmds = append(cmds, m.sampleSendersCmd(m.CurrentFolder))
+		if m.Cache == nil || len(m.Cache.GetSenders(m.CurrentFolder)) == 0 {
+			cmds = append(cmds, m.sampleSendersCmd(m.CurrentFolder))
+		}
 		return m, tea.Batch(cmds...)
 
 	case senders.SelectSenderMsg:
@@ -445,6 +467,76 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, m.loadMessagesCmd(m.CurrentFolder, ""))
 		}
 		return m, tea.Batch(cmds...)
+
+	case senders.PeekAllSendersMsg:
+		if m.crawlCancel != nil {
+			m.crawlCancel()
+			m.crawlCancel = nil
+			m.crawlChan = nil
+			m.SendersPanel.Crawling = false
+			m.StatusBar.Notification = "Sender crawl cancelled"
+			return m, nil
+		}
+		if m.Client == nil {
+			m.StatusBar.ErrorMessage = "Client not connected"
+			return m, nil
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		m.crawlCancel = cancel
+		ch := make(chan gmail.SenderCrawlProgress, 10)
+		m.crawlChan = ch
+		m.SendersPanel.Crawling = true
+		m.SendersPanel.CrawlPercent = 0
+		m.StatusBar.Notification = fmt.Sprintf("Starting sender crawl for %s...", m.CurrentFolder)
+		go m.Client.CrawlFolderSenders(ctx, m.CurrentFolder, ch)
+		return m, m.waitForCrawlProgressCmd()
+
+	case gmail.SenderCrawlProgress:
+		if !m.SendersPanel.Crawling {
+			return m, nil
+		}
+		if msg.Folder != "" && msg.Folder != m.CurrentFolder {
+			return m, nil
+		}
+		if msg.Err != nil {
+			m.SendersPanel.Crawling = false
+			if m.crawlCancel != nil {
+				m.crawlCancel()
+				m.crawlCancel = nil
+				m.crawlChan = nil
+			}
+			if msg.Err != context.Canceled {
+				m.StatusBar.ErrorMessage = fmt.Sprintf("Sender crawl error: %v", msg.Err)
+			}
+			return m, nil
+		}
+		if len(msg.Senders) > 0 {
+			m.SendersPanel.MergeSenders(msg.Senders, msg.Total)
+		}
+		percent := 0
+		if msg.Total > 0 {
+			percent = msg.Crawled * 100 / msg.Total
+			if percent > 100 {
+				percent = 100
+			}
+		}
+		m.SendersPanel.CrawlPercent = percent
+		if msg.Done {
+			m.SendersPanel.Crawling = false
+			m.crawlCancel = nil
+			m.crawlChan = nil
+			senderCount := len(m.SendersPanel.Senders) - 1
+			if senderCount < 0 {
+				senderCount = 0
+			}
+			m.StatusBar.Notification = fmt.Sprintf("Finished crawling senders: %d senders indexed across %d emails", senderCount, msg.Total)
+			if m.Cache != nil {
+				_ = m.Cache.SetSenders(m.CurrentFolder, m.SendersPanel.Senders)
+			}
+			return m, nil
+		}
+		m.StatusBar.Notification = fmt.Sprintf("Crawling senders: %d/%d (%d%%)... [press 'B' to stop]", msg.Crawled, msg.Total, percent)
+		return m, m.waitForCrawlProgressCmd()
 
 	case tea.KeyMsg:
 		// If ReaderModal is active, route all keys to it
@@ -512,6 +604,9 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Global navigation keys
 		switch msg.String() {
 		case "ctrl+c", "q":
+			if m.crawlCancel != nil {
+				m.crawlCancel()
+			}
 			return m, tea.Quit
 
 		// Reader Mode full-screen toggle (o or enter in messages panel)
@@ -831,10 +926,17 @@ func (m AppModel) View() string {
 
 	content := lipgloss.JoinVertical(lipgloss.Left, mainGrid, footer)
 
-	// Guarantee total content lines never exceed m.Height to prevent terminal scrolling
-	if lines := strings.Split(content, "\n"); len(lines) > m.Height && m.Height > 0 {
-		content = strings.Join(lines[:m.Height], "\n")
+	// Strictly guarantee each line never exceeds m.Width and total lines never exceed m.Height
+	lines := strings.Split(content, "\n")
+	for i, line := range lines {
+		if panel.StringWidth(line) > m.Width && m.Width > 0 {
+			lines[i] = panel.Truncate(line, m.Width)
+		}
 	}
+	if len(lines) > m.Height && m.Height > 0 {
+		lines = lines[:m.Height]
+	}
+	content = strings.Join(lines, "\n")
 
 	// Render Confirmation Modal if active
 	if m.ConfirmDelete {
@@ -1083,6 +1185,20 @@ func (m AppModel) openReaderModalCmd(id string) tea.Cmd {
 			_ = m.Cache.SetDetail(m.CurrentFolder, id, detail)
 		}
 		return OpenReaderMsg{Detail: detail, Err: err}
+	}
+}
+
+func (m AppModel) waitForCrawlProgressCmd() tea.Cmd {
+	ch := m.crawlChan
+	return func() tea.Msg {
+		if ch == nil {
+			return nil
+		}
+		p, ok := <-ch
+		if !ok {
+			return nil
+		}
+		return p
 	}
 }
 

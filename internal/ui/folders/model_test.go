@@ -1,8 +1,10 @@
 package folders
 
 import (
-	tea "github.com/charmbracelet/bubbletea"
+	"strings"
 	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 func TestFoldersModel_Navigation(t *testing.T) {
@@ -37,5 +39,19 @@ func TestFoldersModel_Navigation(t *testing.T) {
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
 	if m.CurrentItem().ID != "INBOX" {
 		t.Errorf("expected cursor to be INBOX, got %s", m.CurrentItem().ID)
+	}
+}
+
+func TestFoldersModel_ViewOutput(t *testing.T) {
+	m := New()
+	m.Width = 22
+	m.Height = 21
+	m.Focused = false
+	m.Selected = 0
+	view := m.View()
+	lines := strings.Split(view, "\n")
+	t.Logf("Total lines: %d", len(lines))
+	for i, l := range lines {
+		t.Logf("L%2d: %q", i, l)
 	}
 }

@@ -78,12 +78,12 @@ func borderColor(focused bool) lipgloss.Color {
 // the content width/height available inside the border.
 func InnerSize(outerWidth, outerHeight int) (width, height int) {
 	width = outerWidth - 2
-	if width < 4 {
-		width = 4
+	if width < 0 {
+		width = 0
 	}
 	height = outerHeight - 2
-	if height < 1 {
-		height = 1
+	if height < 0 {
+		height = 0
 	}
 	return width, height
 }
@@ -129,33 +129,38 @@ func CenteredScrollWindow(cursor, totalItems, visibleRows int) (start, end int) 
 // and an optional scroll position footer in the bottom border (lazytask style).
 // Every rendered line is strictly guaranteed to be exactly outerWidth cells wide.
 func Render(title string, body string, outerWidth, outerHeight int, focused bool, footer ...string) string {
+	if outerWidth <= 0 || outerHeight <= 0 {
+		return ""
+	}
+
 	width, height := InnerSize(outerWidth, outerHeight)
 
 	lineStyle := lipgloss.NewStyle().Foreground(borderColor(focused))
 	top := topBorder(title, width, focused, lineStyle)
-	bottom := bottomBorder(firstFooter(footer), width, lineStyle)
+	if outerHeight == 1 {
+		return ansi.Truncate(top, outerWidth, "")
+	}
 
-	content := lipgloss.NewStyle().Width(width).Height(height).Render(body)
+	bottom := bottomBorder(firstFooter(footer), width, lineStyle)
 
 	var b strings.Builder
 	b.WriteString(top)
 	b.WriteString("\n")
 	side := lineStyle.Render("│")
-	lines := strings.Split(content, "\n")
+	bodyLines := strings.Split(body, "\n")
 	for i := 0; i < height; i++ {
 		b.WriteString(side)
 		line := ""
-		if i < len(lines) {
-			line = lines[i]
+		if i < len(bodyLines) {
+			line = bodyLines[i]
 		}
 		lw := ansi.StringWidth(line)
+		if lw > width {
+			line = ansi.Truncate(line, width, "")
+			lw = ansi.StringWidth(line)
+		}
 		if lw < width {
 			line += strings.Repeat(" ", width-lw)
-		} else if lw > width {
-			line = ansi.Truncate(line, width, "")
-			if lw2 := ansi.StringWidth(line); lw2 < width {
-				line += strings.Repeat(" ", width-lw2)
-			}
 		}
 		b.WriteString(line)
 		b.WriteString(side)

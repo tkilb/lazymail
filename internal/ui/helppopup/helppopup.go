@@ -57,6 +57,14 @@ func Render(width, height int) string {
 		"",
 	)
 
+	content = append(content, titleStyle.Render("Panel 4 (Senders):"))
+	content = append(content,
+		keyStyle.Render("  j / k      ")+"Navigate sender list",
+		keyStyle.Render("  Enter      ")+"Filter emails by highlighted sender",
+		keyStyle.Render("  B (Shift+B)")+"Background crawl & cache all senders across folder",
+		"",
+	)
+
 	content = append(content, descStyle.Render("Press [?] or [Esc] to close this help window."))
 
 	modalBox := lipgloss.NewStyle().
